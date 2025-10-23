@@ -7,7 +7,8 @@ use wirecrab::{
     capture::{device, PacketCapture},
     filter::{FilterRules, PacketFilter},
     output::{create_formatter, OutputFormat},
-    parser::PacketParser,
+    parser::{PacketParser, ParsedPacket},
+    session::{SessionTracker, tracker::TrackerConfig},
 };
 
 /// WireCrab - 网络数据包嗅探工具
@@ -26,9 +27,13 @@ struct Cli {
     #[arg(short, long)]
     output: Option<String>,
 
-    /// 协议类型过滤 (tcp|udp|arp|icmp|igmp)
+    /// 协议类型过滤 (tcp|udp|arp|icmp|igmp|http|dns)
     #[arg(long)]
     protocol: Option<String>,
+    
+    /// 应用层协议过滤 (http|dns)
+    #[arg(long)]
+    app_protocol: Option<String>,
 
     /// 源IP地址过滤
     #[arg(long)]
@@ -57,6 +62,14 @@ struct Cli {
     /// 详细输出模式
     #[arg(short, long)]
     verbose: bool,
+    
+    /// 启用会话追踪
+    #[arg(long)]
+    follow_stream: bool,
+    
+    /// 会话超时时间（秒）
+    #[arg(long, default_value = "300")]
+    session_timeout: u64,
 }
 
 fn main() -> Result<()> {
@@ -99,12 +112,51 @@ fn main() -> Result<()> {
     let mut parser = PacketParser::new();
     let formatter = create_formatter(OutputFormat::Json);
     let mut packet_count = 0;
+    
+    // 创建会话追踪器（如果启用）
+    let mut session_tracker = if cli.follow_stream {
+        let mut config = TrackerConfig::default();
+        config.tcp_timeout = std::time::Duration::from_secs(cli.session_timeout);
+        config.udp_timeout = std::time::Duration::from_secs(cli.session_timeout / 5);
+        Some(SessionTracker::new(config))
+    } else {
+        None
+    };
 
     for packet in rx {
         let timestamp = chrono::Utc::now().to_rfc3339();
         match parser.parse_packet(&packet.data, timestamp, packet.interface) {
-            Ok(parsed_packet) => {
+            Ok(mut parsed_packet) => {
+                // 应用基本过滤
                 if filter.matches(&parsed_packet) {
+                    // 会话追踪（如果启用）
+                    if let Some(ref mut tracker) = session_tracker {
+                        if let Ok(Some(session_id)) = tracker.process_packet(&parsed_packet) {
+                            // 添加会话信息
+                            if let Some(session) = tracker.get_session(&session_id) {
+                                parsed_packet.session_info = Some(wirecrab::parser::SessionInfo {
+                                    session_id: session.id.clone(),
+                                    direction: if parsed_packet.frame_number % 2 == 0 {
+                                        "response".to_string()
+                                    } else {
+                                        "request".to_string()
+                                    },
+                                    stream_index: session.packet_count,
+                                    related_packets: vec![],
+                                    total_bytes: session.total_bytes,
+                                    duration_ms: session.duration().as_millis() as u64,
+                                });
+                            }
+                        }
+                    }
+                    
+                    // 应用层协议过滤（应用层已在解析器中解析）
+                    if let Some(ref app_proto) = cli.app_protocol {
+                        if !matches_app_protocol(&parsed_packet, app_proto) {
+                            continue;
+                        }
+                    }
+                    
                     let output = formatter.format_packet(&parsed_packet)?;
                     println!("{}", output);
                     packet_count += 1;
@@ -127,6 +179,21 @@ fn main() -> Result<()> {
     capture_handle.join().unwrap();
 
     Ok(())
+}
+
+/// 检查是否匹配应用层协议
+fn matches_app_protocol(packet: &ParsedPacket, protocol: &str) -> bool {
+    match &packet.application_layer {
+        Some(app_layer) => {
+            use wirecrab::parser::application::ApplicationLayer;
+            match (protocol.to_lowercase().as_str(), app_layer) {
+                ("http", ApplicationLayer::HTTP { .. }) => true,
+                ("dns", ApplicationLayer::DNS { .. }) => true,
+                _ => false,
+            }
+        }
+        None => false,
+    }
 }
 
 /// 列出所有可用的网络接口

@@ -5,8 +5,10 @@ use serde::Serialize;
 
 pub mod ethernet;
 pub mod ipv4;
+pub mod ipv6;
 pub mod tcp;
 pub mod udp;
+pub mod application;
 
 /// 解析后的数据包信息
 #[derive(Debug, Clone, Serialize)]
@@ -18,6 +20,8 @@ pub struct ParsedPacket {
     pub link_layer: LinkLayer,
     pub network_layer: Option<NetworkLayer>,
     pub transport_layer: Option<TransportLayer>,
+    pub application_layer: Option<application::ApplicationLayer>,
+    pub session_info: Option<SessionInfo>,
 }
 
 /// 链路层信息
@@ -86,6 +90,17 @@ pub enum TransportLayer {
     },
 }
 
+/// 会话信息
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub direction: String,  // "request" or "response"
+    pub stream_index: u64,
+    pub related_packets: Vec<u64>,
+    pub total_bytes: u64,
+    pub duration_ms: u64,
+}
+
 /// 数据包解析器
 pub struct PacketParser {
     frame_counter: u64,
@@ -116,6 +131,7 @@ impl PacketParser {
 
         let mut network_layer = None;
         let mut transport_layer = None;
+        let mut application_data = None;
 
         if eth_header.ether_type == etherparse::EtherType::IPV4 {
             // IPv4
@@ -134,7 +150,7 @@ impl PacketParser {
 
             if protocol == 6 {
                 // TCP
-                let (tcp_header, _tcp_payload) = tcp::parse_tcp_packet(payload)?;
+                let (tcp_header, tcp_payload) = tcp::parse_tcp_packet(payload)?;
                 transport_layer = Some(TransportLayer::TCP {
                     src_port: tcp_header.source_port,
                     dst_port: tcp_header.destination_port,
@@ -145,15 +161,98 @@ impl PacketParser {
                     checksum: tcp_header.checksum,
                     urgent_pointer: tcp_header.urgent_pointer,
                 });
+                // 保存应用层数据
+                if !tcp_payload.is_empty() {
+                    application_data = Some(tcp_payload.to_vec());
+                }
             } else if protocol == 17 {
                 // UDP
-                let (udp_header, _udp_payload) = udp::parse_udp_packet(payload)?;
+                let (udp_header, udp_payload) = udp::parse_udp_packet(payload)?;
                 transport_layer = Some(TransportLayer::UDP {
                     src_port: udp_header.source_port,
                     dst_port: udp_header.destination_port,
                     length: udp_header.length,
                     checksum: udp_header.checksum,
                 });
+                // 保存应用层数据
+                if !udp_payload.is_empty() {
+                    application_data = Some(udp_payload.to_vec());
+                }
+            }
+        } else if eth_header.ether_type == etherparse::EtherType::IPV6 {
+            // IPv6
+            let (ipv6_header, ipv6_payload) = ipv6::parse_ipv6_packet(payload)?;
+            payload = ipv6_payload;
+            let next_header = ipv6_header.next_header;
+            network_layer = Some(NetworkLayer::IPv6 {
+                src_ip: ipv6_header.source.to_string(),
+                dst_ip: ipv6_header.destination.to_string(),
+                hop_limit: ipv6_header.hop_limit,
+                traffic_class: ipv6_header.traffic_class,
+                flow_label: ipv6_header.flow_label,
+                payload_length: ipv6_header.payload_length,
+            });
+
+            if next_header == 6 {
+                // TCP
+                let (tcp_header, tcp_payload) = tcp::parse_tcp_packet(payload)?;
+                transport_layer = Some(TransportLayer::TCP {
+                    src_port: tcp_header.source_port,
+                    dst_port: tcp_header.destination_port,
+                    seq: tcp_header.sequence_number,
+                    ack: tcp_header.acknowledgment_number,
+                    flags: tcp::get_tcp_flags(tcp_header.flags),
+                    window: tcp_header.window_size,
+                    checksum: tcp_header.checksum,
+                    urgent_pointer: tcp_header.urgent_pointer,
+                });
+                // 保存应用层数据
+                if !tcp_payload.is_empty() {
+                    application_data = Some(tcp_payload.to_vec());
+                }
+            } else if next_header == 17 {
+                // UDP
+                let (udp_header, udp_payload) = udp::parse_udp_packet(payload)?;
+                transport_layer = Some(TransportLayer::UDP {
+                    src_port: udp_header.source_port,
+                    dst_port: udp_header.destination_port,
+                    length: udp_header.length,
+                    checksum: udp_header.checksum,
+                });
+                // 保存应用层数据
+                if !udp_payload.is_empty() {
+                    application_data = Some(udp_payload.to_vec());
+                }
+            }
+        }
+
+        // 尝试解析应用层协议
+        let mut application_layer = None;
+        if let Some(app_data) = application_data {
+            if let Some(transport) = &transport_layer {
+                match transport {
+                    TransportLayer::TCP { src_port, dst_port, .. } => {
+                        if let Ok(Some(app_layer)) = application::parse_application_data(
+                            &app_data,
+                            *src_port,
+                            *dst_port,
+                            true,
+                        ) {
+                            application_layer = Some(app_layer);
+                        }
+                    }
+                    TransportLayer::UDP { src_port, dst_port, .. } => {
+                        if let Ok(Some(app_layer)) = application::parse_application_data(
+                            &app_data,
+                            *src_port,
+                            *dst_port,
+                            false,
+                        ) {
+                            application_layer = Some(app_layer);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -165,6 +264,8 @@ impl PacketParser {
             link_layer,
             network_layer,
             transport_layer,
+            application_layer,
+            session_info: None,  // 会话信息由会话追踪器提供
         })
     }
 }

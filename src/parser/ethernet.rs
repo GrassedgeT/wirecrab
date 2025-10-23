@@ -69,6 +69,6 @@ mod tests {
         let (header, _payload) = result.unwrap();
         assert_eq!(header.destination, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
         assert_eq!(header.source, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        assert_eq!(header.ether_type, EtherType(0x080));
+        assert_eq!(header.ether_type, EtherType(0x0800));
     }
 }

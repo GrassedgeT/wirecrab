@@ -77,6 +77,8 @@ mod tests {
                 checksum: 0,
                 urgent_pointer: 0,
             }),
+            application_layer: None,
+            session_info: None,
         }
     }
 

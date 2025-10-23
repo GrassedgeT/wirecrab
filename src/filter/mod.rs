@@ -170,6 +170,38 @@ mod tests {
                 checksum: 0,
                 urgent_pointer: 0,
             }),
+            application_layer: None,
+            session_info: None,
+        }
+    }
+
+    fn create_test_ipv6_packet() -> ParsedPacket {
+        ParsedPacket {
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            interface: "eth0".to_string(),
+            length: 100,
+            frame_number: 2,
+            link_layer: LinkLayer {
+                protocol: "Ethernet".to_string(),
+                src_mac: Some("00:11:22:33:44:55".to_string()),
+                dst_mac: Some("66:77:88:99:AA:BB".to_string()),
+            },
+            network_layer: Some(NetworkLayer::IPv6 {
+                src_ip: "2001:db8::1".to_string(),
+                dst_ip: "2001:db8::2".to_string(),
+                hop_limit: 64,
+                traffic_class: 0,
+                flow_label: 0,
+                payload_length: 20,
+            }),
+            transport_layer: Some(TransportLayer::UDP {
+                src_port: 12345,
+                dst_port: 80,
+                length: 20,
+                checksum: 0,
+            }),
+            application_layer: None,
+            session_info: None,
         }
     }
 
@@ -213,5 +245,51 @@ mod tests {
         rules.port = Some(54321);
         let filter = PacketFilter::new(rules);
         assert!(filter.matches(&packet));
+    }
+
+    #[test]
+    fn test_ipv6_filter() {
+        use std::net::IpAddr;
+        use std::str::FromStr;
+
+        let packet = create_test_ipv6_packet();
+        
+        // 测试IPv6源地址过滤
+        let mut rules = FilterRules::new();
+        rules.src_ip = Some(IpAddr::from_str("2001:db8::1").unwrap());
+        let filter = PacketFilter::new(rules);
+        assert!(filter.matches(&packet));
+        
+        // 测试IPv6目标地址过滤
+        let mut rules = FilterRules::new();
+        rules.dst_ip = Some(IpAddr::from_str("2001:db8::2").unwrap());
+        let filter = PacketFilter::new(rules);
+        assert!(filter.matches(&packet));
+        
+        // 测试不匹配的IPv6地址
+        let mut rules = FilterRules::new();
+        rules.src_ip = Some(IpAddr::from_str("2001:db8::3").unwrap());
+        let filter = PacketFilter::new(rules);
+        assert!(!filter.matches(&packet));
+    }
+
+    #[test]
+    fn test_mixed_ip_filter() {
+        use std::net::IpAddr;
+        use std::str::FromStr;
+        
+        // 测试IPv4过滤器不会匹配IPv6数据包
+        let mut rules = FilterRules::new();
+        rules.src_ip = Some(IpAddr::from_str("192.168.1.1").unwrap());
+        let filter = PacketFilter::new(rules);
+        let ipv6_packet = create_test_ipv6_packet();
+        assert!(!filter.matches(&ipv6_packet));
+        
+        // 测试IPv6过滤器不会匹配IPv4数据包
+        let mut rules = FilterRules::new();
+        rules.src_ip = Some(IpAddr::from_str("2001:db8::1").unwrap());
+        let filter = PacketFilter::new(rules);
+        let ipv4_packet = create_test_tcp_packet();
+        assert!(!filter.matches(&ipv4_packet));
     }
 }
