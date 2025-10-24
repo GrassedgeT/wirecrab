@@ -3,7 +3,7 @@
 //! 管理所有活动的网络会话，将数据包分配到相应的会话，
 //! 并处理会话的生命周期。
 
-use super::{Session, SessionKey, SessionState, Protocol, TcpFlow, FlowDirection};
+use super::{Session, SessionKey, SessionState, Protocol, FlowDirection};
 use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -177,7 +177,7 @@ impl SessionTracker {
                         *seq,
                         *ack,
                         flags,
-                        &[], // 初始包通常没有数据
+                        packet.transport_payload.as_deref().unwrap_or(&[]),
                     )?;
                 }
             }
@@ -217,7 +217,7 @@ impl SessionTracker {
                         let dir = direction.unwrap_or(FlowDirection::ClientToServer);
                         
                         // TODO: 提取TCP负载数据
-                        let tcp_data = &[];
+                        let tcp_data = packet.transport_payload.as_deref().unwrap_or(&[]);
                         
                         tcp_flow.add_segment(
                             dir,
@@ -269,7 +269,7 @@ impl SessionTracker {
 
     /// 清理超时的会话
     fn cleanup_expired_sessions(&mut self) {
-        let now = SystemTime::now();
+        let _now = SystemTime::now();
         let mut expired_keys = Vec::new();
 
         for (key, session) in &self.sessions {
@@ -391,6 +391,7 @@ mod tests {
             }),
             application_layer: None,
             session_info: None,
+            transport_payload: None,
         }
     }
 

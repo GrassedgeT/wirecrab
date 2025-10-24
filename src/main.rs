@@ -134,13 +134,35 @@ fn main() -> Result<()> {
                         if let Ok(Some(session_id)) = tracker.process_packet(&parsed_packet) {
                             // 添加会话信息
                             if let Some(session) = tracker.get_session(&session_id) {
+                                let direction = {
+                                    let mut is_request = false;
+                                    if let Some(net_layer) = &parsed_packet.network_layer {
+                                        let src_ip_str = match net_layer {
+                                            wirecrab::parser::NetworkLayer::IPv4 { src_ip, .. } => src_ip,
+                                            wirecrab::parser::NetworkLayer::IPv6 { src_ip, .. } => src_ip,
+                                            _ => "",
+                                        };
+
+                                        if src_ip_str == session.client_ip.to_string() {
+                                            if let Some(transport_layer) = &parsed_packet.transport_layer {
+                                                let src_port = match transport_layer {
+                                                    wirecrab::parser::TransportLayer::TCP { src_port, .. } => Some(*src_port),
+                                                    wirecrab::parser::TransportLayer::UDP { src_port, .. } => Some(*src_port),
+                                                    _ => None,
+                                                };
+
+                                                if src_port == session.client_port {
+                                                    is_request = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if is_request { "request".to_string() } else { "response".to_string() }
+                                };
+
                                 parsed_packet.session_info = Some(wirecrab::parser::SessionInfo {
                                     session_id: session.id.clone(),
-                                    direction: if parsed_packet.frame_number % 2 == 0 {
-                                        "response".to_string()
-                                    } else {
-                                        "request".to_string()
-                                    },
+                                    direction,
                                     stream_index: session.packet_count,
                                     related_packets: vec![],
                                     total_bytes: session.total_bytes,

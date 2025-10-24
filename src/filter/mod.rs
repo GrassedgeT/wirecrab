@@ -1,6 +1,6 @@
 //! 数据包过滤模块
 
-use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer};
+use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer, application::ApplicationLayer};
 
 pub mod rules;
 
@@ -47,12 +47,25 @@ impl PacketFilter {
     /// 检查协议匹配
     fn matches_protocol(&self, packet: &ParsedPacket, protocol: &str) -> bool {
         match protocol.to_lowercase().as_str() {
-            "tcp" => matches!(&packet.transport_layer, Some(TransportLayer::TCP { .. })),
-            "udp" => matches!(&packet.transport_layer, Some(TransportLayer::UDP { .. })),
-            "icmp" => matches!(&packet.transport_layer, Some(TransportLayer::ICMP { .. })),
-            "arp" => matches!(&packet.network_layer, Some(NetworkLayer::ARP { .. })),
-            _ => false,
+
+            // 传输层协议
+            "tcp" => return matches!(&packet.transport_layer, Some(TransportLayer::TCP { .. })),
+            "udp" => return matches!(&packet.transport_layer, Some(TransportLayer::UDP { .. })),
+            "icmp" => return matches!(&packet.transport_layer, Some(TransportLayer::ICMP { .. })),
+            
+            // 网络层协议
+            "arp" => return matches!(&packet.network_layer, Some(NetworkLayer::ARP { .. })),
+            "ipv4" => return matches!(&packet.network_layer, Some(NetworkLayer::IPv4 { .. })),
+            "ipv6" => return matches!(&packet.network_layer, Some(NetworkLayer::IPv6 { .. })),
+            // 应用层协议
+            "http" => return matches!(&packet.application_layer, Some(ApplicationLayer::HTTP { .. })),
+            "dns" => return matches!(&packet.application_layer, Some(ApplicationLayer::DNS { .. })),
+            "ftp" => return matches!(&packet.application_layer, Some(ApplicationLayer::FTP { .. })),
+            "tls" | "https" => return matches!(&packet.application_layer, Some(ApplicationLayer::TLS { .. })),
+            
+            _ => {}
         }
+        false
     }
 
     /// 检查IP地址匹配
@@ -172,6 +185,7 @@ mod tests {
             }),
             application_layer: None,
             session_info: None,
+            transport_payload: None,
         }
     }
 
@@ -202,6 +216,7 @@ mod tests {
             }),
             application_layer: None,
             session_info: None,
+            transport_payload: None,
         }
     }
 
@@ -291,5 +306,30 @@ mod tests {
         let filter = PacketFilter::new(rules);
         let ipv4_packet = create_test_tcp_packet();
         assert!(!filter.matches(&ipv4_packet));
+    }
+
+    #[test]
+    fn test_app_layer_filter() {
+        let mut packet = create_test_tcp_packet();
+        packet.application_layer = Some(ApplicationLayer::HTTP {
+            method: Some("GET".to_string()),
+            uri: Some("/".to_string()),
+            version: "HTTP/1.1".to_string(),
+            status_code: None,
+            headers: Default::default(),
+            body_preview: None,
+        });
+
+        // 测试匹配HTTP
+        let mut rules = FilterRules::new();
+        rules.protocol = Some("http".to_string());
+        let filter = PacketFilter::new(rules);
+        assert!(filter.matches(&packet));
+
+        // 测试不匹配DNS
+        let mut rules = FilterRules::new();
+        rules.protocol = Some("dns".to_string());
+        let filter = PacketFilter::new(rules);
+        assert!(!filter.matches(&packet));
     }
 }

@@ -8,6 +8,7 @@ pub mod ipv4;
 pub mod ipv6;
 pub mod tcp;
 pub mod udp;
+pub mod arp; // 添加 ARP 模块
 pub mod application;
 
 /// 解析后的数据包信息
@@ -22,6 +23,9 @@ pub struct ParsedPacket {
     pub transport_layer: Option<TransportLayer>,
     pub application_layer: Option<application::ApplicationLayer>,
     pub session_info: Option<SessionInfo>,
+
+    #[serde(skip)]
+    pub transport_payload: Option<Vec<u8>>,
 }
 
 /// 链路层信息
@@ -131,7 +135,7 @@ impl PacketParser {
 
         let mut network_layer = None;
         let mut transport_layer = None;
-        let mut application_data = None;
+        let mut transport_payload = None;
 
         if eth_header.ether_type == etherparse::EtherType::IPV4 {
             // IPv4
@@ -163,7 +167,7 @@ impl PacketParser {
                 });
                 // 保存应用层数据
                 if !tcp_payload.is_empty() {
-                    application_data = Some(tcp_payload.to_vec());
+                    transport_payload = Some(tcp_payload.to_vec());
                 }
             } else if protocol == 17 {
                 // UDP
@@ -176,7 +180,7 @@ impl PacketParser {
                 });
                 // 保存应用层数据
                 if !udp_payload.is_empty() {
-                    application_data = Some(udp_payload.to_vec());
+                    transport_payload = Some(udp_payload.to_vec());
                 }
             }
         } else if eth_header.ether_type == etherparse::EtherType::IPV6 {
@@ -208,7 +212,7 @@ impl PacketParser {
                 });
                 // 保存应用层数据
                 if !tcp_payload.is_empty() {
-                    application_data = Some(tcp_payload.to_vec());
+                    transport_payload = Some(tcp_payload.to_vec());
                 }
             } else if next_header == 17 {
                 // UDP
@@ -221,19 +225,29 @@ impl PacketParser {
                 });
                 // 保存应用层数据
                 if !udp_payload.is_empty() {
-                    application_data = Some(udp_payload.to_vec());
+                    transport_payload = Some(udp_payload.to_vec());
                 }
             }
+        } else if eth_header.ether_type == etherparse::EtherType::ARP {
+            // ARP
+            let arp_header = arp::parse_arp_packet(payload)?;
+            network_layer = Some(NetworkLayer::ARP {
+                operation: arp::get_arp_operation_name(arp_header.operation),
+                sender_mac: arp::format_arp_mac(&arp_header.sender_hardware_addr),
+                sender_ip: arp::format_arp_ip(&arp_header.sender_protocol_addr),
+                target_mac: arp::format_arp_mac(&arp_header.target_hardware_addr),
+                target_ip: arp::format_arp_ip(&arp_header.target_protocol_addr),
+            });
         }
 
         // 尝试解析应用层协议
         let mut application_layer = None;
-        if let Some(app_data) = application_data {
+        if let Some(app_data) = transport_payload.as_deref() {
             if let Some(transport) = &transport_layer {
                 match transport {
                     TransportLayer::TCP { src_port, dst_port, .. } => {
                         if let Ok(Some(app_layer)) = application::parse_application_data(
-                            &app_data,
+                            app_data,
                             *src_port,
                             *dst_port,
                             true,
@@ -243,7 +257,7 @@ impl PacketParser {
                     }
                     TransportLayer::UDP { src_port, dst_port, .. } => {
                         if let Ok(Some(app_layer)) = application::parse_application_data(
-                            &app_data,
+                            app_data,
                             *src_port,
                             *dst_port,
                             false,
@@ -265,7 +279,8 @@ impl PacketParser {
             network_layer,
             transport_layer,
             application_layer,
-            session_info: None,  // 会话信息由会话追踪器提供
+            session_info: None, // 会话信息由会话追踪器提供
+            transport_payload,
         })
     }
 }

@@ -8,12 +8,14 @@ use std::collections::HashMap;
 
 pub mod dns;
 pub mod http;
+pub mod ftp;
+pub mod tls;
 
 /// 应用层协议类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationProtocol {
     HTTP,
-    HTTPS,
+    TLS,
     DNS,
     FTP,
     SSH,
@@ -49,6 +51,9 @@ pub enum ApplicationLayer {
     SSH {
         version: Option<String>,
         encrypted: bool,
+    },
+    TLS {
+        sni_hostname: Option<String>,
     },
 }
 
@@ -87,7 +92,7 @@ pub fn guess_protocol_by_port(src_port: u16, dst_port: u16) -> ApplicationProtoc
     // 检查常见的端口
     match (src_port, dst_port) {
         (80, _) | (_, 80) | (8080, _) | (_, 8080) => ApplicationProtocol::HTTP,
-        (443, _) | (_, 443) | (8443, _) | (_, 8443) => ApplicationProtocol::HTTPS,
+        (443, _) | (_, 443) | (8443, _) | (_, 8443) => ApplicationProtocol::TLS,
         (53, _) | (_, 53) => ApplicationProtocol::DNS,
         (21, _) | (_, 21) => ApplicationProtocol::FTP,
         (22, _) | (_, 22) => ApplicationProtocol::SSH,
@@ -114,12 +119,26 @@ pub fn parse_application_data(
     match protocol {
         ApplicationProtocol::DNS => {
             // DNS可以在TCP或UDP上运行
-            dns::parse_dns_packet(data).map(Some)
+            dns::parse_dns_packet(data, is_tcp).map(Some)
         }
         ApplicationProtocol::HTTP => {
             // HTTP只在TCP上运行
             if is_tcp {
                 http::parse_http_data(data).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+        ApplicationProtocol::FTP => {
+            if is_tcp {
+                ftp::parse_ftp_data(data).map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+        ApplicationProtocol::TLS => {
+            if is_tcp {
+                tls::parse_tls_client_hello(data).map(Some)
             } else {
                 Ok(None)
             }
@@ -135,7 +154,7 @@ mod tests {
     #[test]
     fn test_guess_protocol_by_port() {
         assert_eq!(guess_protocol_by_port(80, 12345), ApplicationProtocol::HTTP);
-        assert_eq!(guess_protocol_by_port(12345, 443), ApplicationProtocol::HTTPS);
+        assert_eq!(guess_protocol_by_port(12345, 443), ApplicationProtocol::TLS);
         assert_eq!(guess_protocol_by_port(53, 12345), ApplicationProtocol::DNS);
         assert_eq!(guess_protocol_by_port(12345, 12346), ApplicationProtocol::Unknown);
     }

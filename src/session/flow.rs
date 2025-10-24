@@ -83,7 +83,7 @@ impl TcpFlow {
         &mut self,
         direction: FlowDirection,
         seq: u32,
-        ack: u32,
+        _ack: u32,
         flags: &[String],
         data: &[u8],
     ) -> Result<()> {
@@ -128,47 +128,36 @@ impl TcpFlow {
             return Ok(());
         }
 
-        match self.state {
-            TcpState::Init => {
-                if has_syn && !has_ack {
-                    self.state = TcpState::SynSent;
+        self.state = match self.state {
+            TcpState::Init if direction == FlowDirection::ClientToServer && has_syn && !has_ack => TcpState::SynSent,
+            TcpState::SynSent if direction == FlowDirection::ServerToClient && has_syn && has_ack => TcpState::SynReceived,
+            TcpState::SynReceived if direction == FlowDirection::ClientToServer && has_ack => TcpState::Established,
+            
+            TcpState::Established if has_fin => {
+                if direction == FlowDirection::ClientToServer {
+                    TcpState::FinWait1
+                } else { // ServerToClient
+                    TcpState::CloseWait
                 }
-            }
-            TcpState::SynSent => {
-                if has_syn && has_ack {
-                    self.state = TcpState::SynReceived;
-                }
-            }
-            TcpState::SynReceived => {
-                if has_ack && !has_syn {
-                    self.state = TcpState::Established;
-                }
-            }
-            TcpState::Established => {
-                if has_fin {
-                    self.state = TcpState::FinWait1;
-                }
-            }
-            TcpState::FinWait1 => {
-                if has_ack {
-                    self.state = TcpState::FinWait2;
-                }
-                if has_fin {
-                    self.state = TcpState::Closing;
-                }
-            }
-            TcpState::FinWait2 => {
-                if has_fin {
-                    self.state = TcpState::TimeWait;
-                }
-            }
-            TcpState::Closing => {
-                if has_ack {
-                    self.state = TcpState::TimeWait;
-                }
-            }
-            _ => {}
-        }
+            },
+            
+            TcpState::FinWait1 if has_ack => TcpState::FinWait2,
+            TcpState::FinWait1 if has_fin => TcpState::Closing,
+
+            TcpState::FinWait2 if has_fin => TcpState::TimeWait,
+
+            TcpState::CloseWait if direction == FlowDirection::ServerToClient && has_fin => TcpState::LastAck,
+            
+            TcpState::LastAck if direction == FlowDirection::ClientToServer && has_ack => TcpState::Closed,
+
+            TcpState::Closing if has_ack => TcpState::TimeWait,
+
+            // TIME_WAIT 状态通常由客户端在等待2MSL后自行关闭，这里我们简化处理
+            TcpState::TimeWait => TcpState::Closed,
+
+            // 保持当前状态
+            _ => self.state,
+        };
 
         Ok(())
     }
@@ -289,6 +278,52 @@ mod tests {
             &[],
         ).unwrap();
         assert_eq!(flow.state, TcpState::Established);
+    }
+
+    #[test]
+    fn test_tcp_state_normal_closure() {
+        let mut flow = TcpFlow::new();
+        flow.state = TcpState::Established;
+
+        // 收到客户端的FIN
+        flow.add_segment(
+            FlowDirection::ClientToServer,
+            3000,
+            4000,
+            &vec!["FIN".to_string(), "ACK".to_string()],
+            &[],
+        ).unwrap();
+        assert_eq!(flow.state, TcpState::FinWait1);
+
+        // 服务器响应ACK
+        flow.add_segment(
+            FlowDirection::ServerToClient,
+            4000,
+            3001,
+            &vec!["ACK".to_string()],
+            &[],
+        ).unwrap();
+        assert_eq!(flow.state, TcpState::FinWait2);
+
+        // 服务器发送自己的FIN
+        flow.add_segment(
+            FlowDirection::ServerToClient,
+            4000,
+            3001,
+            &vec!["FIN".to_string(), "ACK".to_string()],
+            &[],
+        ).unwrap();
+        assert_eq!(flow.state, TcpState::TimeWait);
+
+        // 收到客户端对FIN的ACK
+        flow.add_segment(
+            FlowDirection::ClientToServer,
+            3001,
+            4001,
+            &vec!["ACK".to_string()],
+            &[],
+        ).unwrap();
+        assert_eq!(flow.state, TcpState::Closed);
     }
 
     #[test]

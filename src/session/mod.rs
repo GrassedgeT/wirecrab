@@ -3,9 +3,7 @@
 //! 负责跟踪网络连接的完整会话，重组TCP流，
 //! 并为应用层协议解析提供完整的数据流。
 
-use anyhow::Result;
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::time::{Duration, SystemTime};
 
 pub mod tracker;
@@ -45,6 +43,10 @@ pub struct Session {
     pub id: String,
     /// 会话密钥
     pub key: SessionKey,
+    /// 客户端IP地址
+    pub client_ip: IpAddr,
+    /// 客户端端口
+    pub client_port: Option<u16>,
     /// 会话开始时间
     pub start_time: SystemTime,
     /// 最后活动时间
@@ -145,6 +147,8 @@ impl Session {
 
         Self {
             id: key.to_session_id(),
+            client_ip: key.src_ip,
+            client_port: key.src_port,
             key,
             start_time: now,
             last_activity: now,

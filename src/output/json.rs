@@ -79,6 +79,7 @@ mod tests {
             }),
             application_layer: None,
             session_info: None,
+            transport_payload: None,
         }
     }
 
