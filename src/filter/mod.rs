@@ -1,47 +1,46 @@
 //! 数据包过滤模块
 
 use crate::parser::{ParsedPacket, NetworkLayer, TransportLayer, application::ApplicationLayer};
-
-pub mod rules;
-
-pub use rules::FilterRules;
+use std::net::IpAddr;
 
 /// 数据包过滤器
 pub struct PacketFilter {
-    rules: FilterRules,
+    protocol: Option<String>,
+    src_ip: Option<IpAddr>,
+    dst_ip: Option<IpAddr>,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
+    port: Option<u16>,
 }
 
 impl PacketFilter {
     /// 创建新的过滤器
-    pub fn new(rules: FilterRules) -> Self {
-        Self { rules }
+    pub fn new(
+        protocol: Option<String>,
+        src_ip: Option<IpAddr>,
+        dst_ip: Option<IpAddr>,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+        port: Option<u16>,
+    ) -> Self {
+        Self {
+            protocol,
+            src_ip,
+            dst_ip,
+            src_port,
+            dst_port,
+            port,
+        }
     }
 
     /// 检查数据包是否匹配过滤规则
     pub fn matches(&self, packet: &ParsedPacket) -> bool {
-        // 如果没有设置任何过滤规则，则匹配所有数据包
-        if self.rules.is_empty() {
-            return true;
-        }
+        // 每个条件必须满足，或者相应的过滤器未设置。
+        let protocol_ok = self.protocol.as_ref().map_or(true, |p| self.matches_protocol(packet, p));
+        let ip_ok = self.matches_ip_addresses(packet);
+        let port_ok = self.matches_ports(packet);
 
-        // 检查协议过滤
-        if let Some(protocol) = &self.rules.protocol {
-            if !self.matches_protocol(packet, protocol) {
-                return false;
-            }
-        }
-
-        // 检查IP地址过滤
-        if !self.matches_ip_addresses(packet) {
-            return false;
-        }
-
-        // 检查端口过滤
-        if !self.matches_ports(packet) {
-            return false;
-        }
-
-        true
+        protocol_ok && ip_ok && port_ok
     }
 
     /// 检查协议匹配
@@ -70,18 +69,18 @@ impl PacketFilter {
 
     /// 检查IP地址匹配
     fn matches_ip_addresses(&self, packet: &ParsedPacket) -> bool {
-        if self.rules.src_ip.is_none() && self.rules.dst_ip.is_none() {
+        if self.src_ip.is_none() && self.dst_ip.is_none() {
             return true;
         }
 
         match &packet.network_layer {
             Some(NetworkLayer::IPv4 { src_ip, dst_ip, .. }) => {
-                if let Some(filter_src) = &self.rules.src_ip {
+                if let Some(filter_src) = &self.src_ip {
                     if filter_src.to_string() != *src_ip {
                         return false;
                     }
                 }
-                if let Some(filter_dst) = &self.rules.dst_ip {
+                if let Some(filter_dst) = &self.dst_ip {
                     if filter_dst.to_string() != *dst_ip {
                         return false;
                     }
@@ -89,28 +88,44 @@ impl PacketFilter {
                 true
             }
             Some(NetworkLayer::IPv6 { src_ip, dst_ip, .. }) => {
-                if let Some(filter_src) = &self.rules.src_ip {
+                if let Some(filter_src) = &self.src_ip {
                     if filter_src.to_string() != *src_ip {
                         return false;
                     }
                 }
-                if let Some(filter_dst) = &self.rules.dst_ip {
+                if let Some(filter_dst) = &self.dst_ip {
                     if filter_dst.to_string() != *dst_ip {
                         return false;
                     }
                 }
                 true
             }
-            _ => false,
+            Some(NetworkLayer::ARP { sender_ip, target_ip, .. }) => {
+                if let Some(filter_src) = &self.src_ip {
+                    if filter_src.to_string() != *sender_ip {
+                        return false;
+                    }
+                }
+                if let Some(filter_dst) = &self.dst_ip {
+                    if filter_dst.to_string() != *target_ip {
+                        return false;
+                    }
+                }
+                true
+            }
+            _ => {
+                // 如果设置了IP过滤但不是IP或ARP数据包，则不匹配
+                self.src_ip.is_none() && self.dst_ip.is_none()
+            }
         }
     }
 
     /// 检查端口匹配
     fn matches_ports(&self, packet: &ParsedPacket) -> bool {
         // 如果没有端口过滤规则，则匹配
-        if self.rules.src_port.is_none() && 
-           self.rules.dst_port.is_none() && 
-           self.rules.port.is_none() {
+        if self.src_port.is_none() &&
+           self.dst_port.is_none() &&
+           self.port.is_none() {
             return true;
         }
 
@@ -118,21 +133,21 @@ impl PacketFilter {
             Some(TransportLayer::TCP { src_port, dst_port, .. }) |
             Some(TransportLayer::UDP { src_port, dst_port, .. }) => {
                 // 检查源端口
-                if let Some(filter_src_port) = self.rules.src_port {
+                if let Some(filter_src_port) = self.src_port {
                     if *src_port != filter_src_port {
                         return false;
                     }
                 }
                 
                 // 检查目标端口
-                if let Some(filter_dst_port) = self.rules.dst_port {
+                if let Some(filter_dst_port) = self.dst_port {
                     if *dst_port != filter_dst_port {
                         return false;
                     }
                 }
                 
                 // 检查任意端口（源或目标）
-                if let Some(filter_port) = self.rules.port {
+                if let Some(filter_port) = self.port {
                     if *src_port != filter_port && *dst_port != filter_port {
                         return false;
                     }
@@ -142,7 +157,8 @@ impl PacketFilter {
             }
             _ => {
                 // 如果设置了端口过滤但数据包不是TCP/UDP，则不匹配
-                false
+                // 对于ARP等没有端口的协议，如果设置了端口过滤，则不匹配
+                self.src_port.is_none() && self.dst_port.is_none() && self.port.is_none()
             }
         }
     }
@@ -224,8 +240,7 @@ mod tests {
 
     #[test]
     fn test_empty_filter_matches_all() {
-        let rules = FilterRules::new();
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, None, None, None, None, None);
         let packet = create_test_tcp_packet();
         
         assert!(filter.matches(&packet));
@@ -233,34 +248,26 @@ mod tests {
 
     #[test]
     fn test_protocol_filter() {
-        let mut rules = FilterRules::new();
-        rules.protocol = Some("tcp".to_string());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(Some("tcp".to_string()), None, None, None, None, None);
         let packet = create_test_tcp_packet();
         
         assert!(filter.matches(&packet));
         
         // 测试不匹配的协议
-        let mut rules = FilterRules::new();
-        rules.protocol = Some("udp".to_string());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(Some("udp".to_string()), None, None, None, None, None);
         assert!(!filter.matches(&packet));
     }
 
     #[test]
     fn test_port_filter() {
         // 测试目标端口过滤
-        let mut rules = FilterRules::new();
-        rules.dst_port = Some(443);
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, None, None, None, Some(443), None);
         let packet = create_test_tcp_packet();
         
         assert!(filter.matches(&packet));
         
         // 测试任意端口过滤
-        let mut rules = FilterRules::new();
-        rules.port = Some(54321);
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, None, None, None, None, Some(54321));
         assert!(filter.matches(&packet));
     }
 
@@ -272,21 +279,15 @@ mod tests {
         let packet = create_test_ipv6_packet();
         
         // 测试IPv6源地址过滤
-        let mut rules = FilterRules::new();
-        rules.src_ip = Some(IpAddr::from_str("2001:db8::1").unwrap());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, Some(IpAddr::from_str("2001:db8::1").unwrap()), None, None, None, None);
         assert!(filter.matches(&packet));
         
         // 测试IPv6目标地址过滤
-        let mut rules = FilterRules::new();
-        rules.dst_ip = Some(IpAddr::from_str("2001:db8::2").unwrap());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, None, Some(IpAddr::from_str("2001:db8::2").unwrap()), None, None, None);
         assert!(filter.matches(&packet));
         
         // 测试不匹配的IPv6地址
-        let mut rules = FilterRules::new();
-        rules.src_ip = Some(IpAddr::from_str("2001:db8::3").unwrap());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, Some(IpAddr::from_str("2001:db8::3").unwrap()), None, None, None, None);
         assert!(!filter.matches(&packet));
     }
 
@@ -296,16 +297,12 @@ mod tests {
         use std::str::FromStr;
         
         // 测试IPv4过滤器不会匹配IPv6数据包
-        let mut rules = FilterRules::new();
-        rules.src_ip = Some(IpAddr::from_str("192.168.1.1").unwrap());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, Some(IpAddr::from_str("192.168.1.1").unwrap()), None, None, None, None);
         let ipv6_packet = create_test_ipv6_packet();
         assert!(!filter.matches(&ipv6_packet));
         
         // 测试IPv6过滤器不会匹配IPv4数据包
-        let mut rules = FilterRules::new();
-        rules.src_ip = Some(IpAddr::from_str("2001:db8::1").unwrap());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(None, Some(IpAddr::from_str("2001:db8::1").unwrap()), None, None, None, None);
         let ipv4_packet = create_test_tcp_packet();
         assert!(!filter.matches(&ipv4_packet));
     }
@@ -323,15 +320,11 @@ mod tests {
         });
 
         // 测试匹配HTTP
-        let mut rules = FilterRules::new();
-        rules.protocol = Some("http".to_string());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(Some("http".to_string()), None, None, None, None, None);
         assert!(filter.matches(&packet));
 
         // 测试不匹配DNS
-        let mut rules = FilterRules::new();
-        rules.protocol = Some("dns".to_string());
-        let filter = PacketFilter::new(rules);
+        let filter = PacketFilter::new(Some("dns".to_string()), None, None, None, None, None);
         assert!(!filter.matches(&packet));
     }
 }

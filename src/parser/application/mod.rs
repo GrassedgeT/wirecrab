@@ -57,6 +57,18 @@ pub enum ApplicationLayer {
     },
 }
 
+impl ApplicationLayer {
+    pub fn name(&self) -> &str {
+        match self {
+            ApplicationLayer::HTTP { .. } => "HTTP",
+            ApplicationLayer::DNS { .. } => "DNS",
+            ApplicationLayer::FTP { .. } => "FTP",
+            ApplicationLayer::SSH { .. } => "SSH",
+            ApplicationLayer::TLS { .. } => "TLS",
+        }
+    }
+}
+
 /// DNS标志
 #[derive(Debug, Clone, Serialize)]
 pub struct DnsFlags {

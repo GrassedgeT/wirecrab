@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use wirecrab::{
     capture::{device, PacketCapture},
-    filter::{FilterRules, PacketFilter},
+    filter::PacketFilter,
     output::{create_formatter, OutputFormat},
     parser::{PacketParser, ParsedPacket},
     session::{SessionTracker, tracker::TrackerConfig},
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
         }
     });
 
-    let filter_rules = FilterRules::from_cli_args(
+    let filter = PacketFilter::new(
         cli.protocol,
         cli.src_ip,
         cli.dst_ip,
@@ -104,7 +104,6 @@ fn main() -> Result<()> {
         cli.dst_port,
         cli.port,
     );
-    let filter = PacketFilter::new(filter_rules);
     let mut parser = PacketParser::new();
     let formatter = create_formatter(OutputFormat::Json);
     let mut packet_count = 0;

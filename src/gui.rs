@@ -1,6 +1,8 @@
 use eframe::{egui, App, Frame};
 use pcap::Device;
-use crate::{capture::{device, PacketCapture}, parser::{ParsedPacket, PacketParser}, create_formatter, OutputFormat};
+use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}, create_formatter, OutputFormat};
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use egui_extras::{TableBuilder, Column};
@@ -32,8 +34,15 @@ pub struct WireCrabApp {
     devices: Vec<Device>,
     selected_device_index: Option<usize>,
     is_capturing: bool,
-    filter_text: String,
+    protocol_filter: String,
+    src_ip_filter: String,
+    dst_ip_filter: String,
+    src_port_filter: String,
+    dst_port_filter: String,
+    port_filter: String,
     packets: VecDeque<ParsedPacket>,
+    filtered_packets: Vec<usize>,
+    active_filter: Option<PacketFilter>,
     selected_packet_index: Option<usize>,
     packet_receiver: Option<mpsc::Receiver<ParsedPacket>>,
     capture_handle: Option<thread::JoinHandle<()>>,
@@ -48,8 +57,15 @@ impl Default for WireCrabApp {
             devices: device::list_devices().unwrap_or_default(),
             selected_device_index: None,
             is_capturing: false,
-            filter_text: String::new(),
+            protocol_filter: String::new(),
+            src_ip_filter: String::new(),
+            dst_ip_filter: String::new(),
+            src_port_filter: String::new(),
+            dst_port_filter: String::new(),
+            port_filter: String::new(),
             packets: VecDeque::new(),
+            filtered_packets: Vec::new(),
+            active_filter: None,
             selected_packet_index: None,
             packet_receiver: None,
             capture_handle: None,
@@ -203,7 +219,61 @@ impl WireCrabApp {
             });
             
             // 过滤器输入
-            ui.add(egui::TextEdit::singleline(&mut self.filter_text).hint_text("Enter filter..."));
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Filter Options");
+
+                    egui::ComboBox::from_label("Protocol")
+                        .selected_text(if self.protocol_filter.is_empty() { "Any" } else { &self.protocol_filter })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.protocol_filter, "".to_string(), "Any");
+                            ui.selectable_value(&mut self.protocol_filter, "tcp".to_string(), "TCP");
+                            ui.selectable_value(&mut self.protocol_filter, "udp".to_string(), "UDP");
+                            ui.selectable_value(&mut self.protocol_filter, "arp".to_string(), "ARP");
+                            ui.selectable_value(&mut self.protocol_filter, "ipv4".to_string(), "IPv4");
+                            ui.selectable_value(&mut self.protocol_filter, "ipv6".to_string(), "IPv6");
+                            ui.selectable_value(&mut self.protocol_filter, "icmp".to_string(), "ICMP");
+                            ui.selectable_value(&mut self.protocol_filter, "igmp".to_string(), "IGMP");
+                            ui.selectable_value(&mut self.protocol_filter, "http".to_string(), "HTTP");
+                            ui.selectable_value(&mut self.protocol_filter, "https".to_string(), "HTTPS");
+                            ui.selectable_value(&mut self.protocol_filter, "dns".to_string(), "DNS");
+                        });
+
+                    ui.label("Src IP:");
+                    ui.add(egui::TextEdit::singleline(&mut self.src_ip_filter).desired_width(150.0));
+                    ui.label("Dst IP:");
+                    ui.add(egui::TextEdit::singleline(&mut self.dst_ip_filter).desired_width(150.0));
+                    ui.label("Src Port:");
+                    ui.add(egui::TextEdit::singleline(&mut self.src_port_filter).desired_width(60.0));
+                    ui.label("Dst Port:");
+                    ui.add(egui::TextEdit::singleline(&mut self.dst_port_filter).desired_width(60.0));
+                    ui.label("Port:");
+                    ui.add(egui::TextEdit::singleline(&mut self.port_filter).desired_width(60.0));
+
+                    if ui.button("Apply").clicked() {
+                        let protocol = if self.protocol_filter.is_empty() { None } else { Some(self.protocol_filter.clone()) };
+                        let src_ip = IpAddr::from_str(&self.src_ip_filter).ok();
+                        let dst_ip = IpAddr::from_str(&self.dst_ip_filter).ok();
+                        let src_port = self.src_port_filter.parse::<u16>().ok();
+                        let dst_port = self.dst_port_filter.parse::<u16>().ok();
+                        let port = self.port_filter.parse::<u16>().ok();
+
+                        let filter = PacketFilter::new(protocol, src_ip, dst_ip, src_port, dst_port, port);
+                        self.active_filter = Some(filter);
+                        self.apply_filter();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.protocol_filter.clear();
+                        self.src_ip_filter.clear();
+                        self.dst_ip_filter.clear();
+                        self.src_port_filter.clear();
+                        self.dst_port_filter.clear();
+                        self.port_filter.clear();
+                        self.active_filter = None;
+                        self.apply_filter();
+                    }
+                });
+            });
         });
 
         // 左侧面板（数据包列表）
@@ -229,26 +299,48 @@ impl WireCrabApp {
                         header.col(|ui| { ui.strong("Length"); });
                     })
                     .body(|mut body| {
-                        for (i, packet) in self.packets.iter().enumerate() {
+                        let packets_to_show: Vec<_> = if self.active_filter.is_some() {
+                            self.filtered_packets.iter().map(|&i| (i, &self.packets[i])).collect()
+                        } else {
+                            self.packets.iter().enumerate().collect()
+                        };
+
+                        for (i, packet) in packets_to_show {
                             let is_selected = self.selected_packet_index == Some(i);
                             body.row(18.0, |mut row| {
                                 row.set_selected(is_selected);
                                 row.col(|ui| { ui.label(packet.timestamp.format("%H:%M:%S").to_string()); });
                                 row.col(|ui| {
                                     ui.label(packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                        crate::parser::NetworkLayer::IPv4 { src_ip, .. } => src_ip,
-                                        crate::parser::NetworkLayer::IPv6 { src_ip, .. } => src_ip,
+                                        crate::parser::NetworkLayer::IPv4 { src_ip, .. } => src_ip.as_str(),
+                                        crate::parser::NetworkLayer::IPv6 { src_ip, .. } => src_ip.as_str(),
+                                        crate::parser::NetworkLayer::ARP { sender_mac, .. } => sender_mac.as_str(),
                                         _ => "N/A",
                                     }));
                                 });
                                 row.col(|ui| {
                                     ui.label(packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                        crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => dst_ip,
-                                        crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => dst_ip,
+                                        crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => dst_ip.as_str(),
+                                        crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => dst_ip.as_str(),
+                                        crate::parser::NetworkLayer::ARP { target_mac, .. } => target_mac.as_str(),
                                         _ => "N/A",
                                     }));
                                 });
-                                row.col(|ui| { ui.label(packet.transport_layer.as_ref().map_or("N/A", |l| l.name())); });
+                                row.col(|ui| {
+                                    let protocol = if let Some(transport) = &packet.transport_layer {
+                                        transport.name().to_string()
+                                    } else if let Some(network) = &packet.network_layer {
+                                        match network {
+                                            crate::parser::NetworkLayer::ARP { .. } => "ARP".to_string(),
+                                            crate::parser::NetworkLayer::IPv4 { .. } => "IPv4".to_string(),
+                                            crate::parser::NetworkLayer::IPv6 { .. } => "IPv6".to_string(),
+                                            _ => "N/A".to_string(),
+                                        }
+                                    } else {
+                                        "N/A".to_string()
+                                    };
+                                    ui.label(protocol);
+                                });
                                 row.col(|ui| { ui.label(packet.length.to_string()); });
                                 
                                 if row.response().clicked() {
@@ -310,5 +402,16 @@ impl WireCrabApp {
             ui.heading("Statistics");
             ui.label("This feature is not yet implemented.");
         });
+    }
+    fn apply_filter(&mut self) {
+        self.filtered_packets.clear();
+        if let Some(filter) = &self.active_filter {
+            for (i, packet) in self.packets.iter().enumerate() {
+                if filter.matches(packet) {
+                    self.filtered_packets.push(i);
+                }
+            }
+        }
+        self.selected_packet_index = None;
     }
 }
