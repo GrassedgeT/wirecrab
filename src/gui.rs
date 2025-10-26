@@ -1,5 +1,6 @@
 use eframe::{egui, App, Frame};
 use egui_json_tree::JsonTree;
+use egui_plot::{Line, Plot, Legend};
 use pcap::Device;
 use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}};
 use std::net::IpAddr;
@@ -7,7 +8,8 @@ use std::str::FromStr;
 use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
 use std::thread;
 use egui_extras::{TableBuilder, Column};
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
+use std::time::Instant;
 
 #[derive(PartialEq)]
 enum Tab {
@@ -30,6 +32,12 @@ impl std::fmt::Display for CacheLimit {
     }
 }
 
+#[derive(PartialEq)]
+enum ChartView {
+    Line,
+    Pie,
+}
+
 pub struct WireCrabApp {
     active_tab: Tab,
     devices: Vec<Device>,
@@ -49,6 +57,13 @@ pub struct WireCrabApp {
     capture_handle: Option<thread::JoinHandle<()>>,
     is_running: Arc<AtomicBool>,
     packet_cache_limit: CacheLimit,
+
+    // Statistics
+    protocol_counts: HashMap<String, u64>,
+    time_series: HashMap<String, VecDeque<[f64; 2]>>,
+    start_time: Instant,
+    last_update: Instant,
+    active_chart: ChartView,
 }
 
 impl Default for WireCrabApp {
@@ -72,6 +87,11 @@ impl Default for WireCrabApp {
             capture_handle: None,
             is_running: Arc::new(AtomicBool::new(false)),
             packet_cache_limit: CacheLimit::Unlimited,
+            protocol_counts: HashMap::new(),
+            time_series: HashMap::new(),
+            start_time: Instant::now(),
+            last_update: Instant::now(),
+            active_chart: ChartView::Line,
         }
     }
 }
@@ -81,6 +101,11 @@ impl App for WireCrabApp {
         if let Some(rx) = &self.packet_receiver {
             let mut packet_count = 0;
             for packet in rx.try_iter() {
+                let protocols = packet.get_protocols();
+                for protocol in protocols {
+                    *self.protocol_counts.entry(protocol.to_string()).or_insert(0) += 1;
+                }
+
                 self.packets.push_back(packet);
                 if let CacheLimit::Limit(limit) = self.packet_cache_limit {
                     if self.packets.len() > limit {
@@ -139,12 +164,14 @@ impl WireCrabApp {
                                 Some(i),
                                 &device.name,
                             );
-                            response.clone().on_hover_text(
-                                device
-                                    .desc
-                                    .as_ref()
-                                    .unwrap_or(&"No description".to_string()),
-                            );
+                            let mut hover_text = device.desc.as_ref().cloned().unwrap_or_else(|| "No description".to_string());
+                            for addr in &device.addresses {
+                                hover_text.push_str(&format!("\nAddress: {}", addr.addr));
+                                if let Some(netmask) = addr.netmask {
+                                    hover_text.push_str(&format!("\n  Mask: {}", netmask));
+                                }
+                            }
+                            response.clone().on_hover_text(hover_text);
                             if response.changed() {
                                 self.packets.clear();
                                 self.selected_packet_index = None;
@@ -209,6 +236,8 @@ impl WireCrabApp {
                     self.packets.clear();
                     self.filtered_packets.clear();
                     self.selected_packet_index = None;
+                    self.protocol_counts.clear();
+                    self.time_series.clear();
                 }
 
                 ui.separator();
@@ -436,9 +465,35 @@ impl WireCrabApp {
     }
 
     fn show_statistics_tab(&mut self, ctx: &egui::Context) {
+        if self.last_update.elapsed().as_secs_f32() > 1.0 {
+            let now = self.start_time.elapsed().as_secs_f64();
+            for (protocol, count) in &self.protocol_counts {
+                let series = self.time_series.entry(protocol.clone()).or_default();
+                series.push_back([now, *count as f64]);
+                if series.len() > 100 { // Keep a limited history
+                    series.pop_front();
+                }
+            }
+            self.last_update = Instant::now();
+            ctx.request_repaint();
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Statistics");
-            ui.label("This feature is not yet implemented.");
+            ui.heading("Protocol Statistics");
+
+            let plot = Plot::new("protocol_stats")
+                .legend(Legend::default())
+                .height(ui.available_height() - 100.0);
+
+            plot.show(ui, |plot_ui| {
+                for (protocol, series) in &self.time_series {
+                    if !series.is_empty() {
+                        let points = series.iter().copied().collect::<Vec<_>>();
+                        let line = Line::new(protocol, points);
+                        plot_ui.line(line);
+                    }
+                }
+            });
         });
     }
     fn apply_filter(&mut self) {
@@ -451,5 +506,35 @@ impl WireCrabApp {
             }
         }
         self.selected_packet_index = None;
+    }
+}
+
+impl ParsedPacket {
+    fn get_protocols(&self) -> Vec<&'static str> {
+        let mut protocols = Vec::new();
+        if let Some(net_layer) = &self.network_layer {
+            match net_layer {
+                crate::parser::NetworkLayer::IPv4 { .. } => protocols.push("ipv4"),
+                crate::parser::NetworkLayer::IPv6 { .. } => protocols.push("ipv6"),
+                crate::parser::NetworkLayer::ARP { .. } => protocols.push("arp"),
+                _ => {}
+            }
+        }
+        if let Some(transport_layer) = &self.transport_layer {
+            match transport_layer {
+                crate::parser::TransportLayer::TCP { .. } => protocols.push("tcp"),
+                crate::parser::TransportLayer::UDP { .. } => protocols.push("udp"),
+                _ => {}
+            }
+        }
+        if let Some(app_layer) = &self.application_layer {
+            match app_layer {
+                crate::parser::application::ApplicationLayer::HTTP { .. } => protocols.push("http"),
+                crate::parser::application::ApplicationLayer::TLS { .. } => protocols.push("https"), // Assuming TLS is HTTPS
+                crate::parser::application::ApplicationLayer::DNS { .. } => protocols.push("dns"),
+                _ => {}
+            }
+        }
+        protocols
     }
 }
