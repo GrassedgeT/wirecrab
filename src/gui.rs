@@ -1,6 +1,7 @@
 use eframe::{egui, App, Frame};
+use egui_json_tree::JsonTree;
 use pcap::Device;
-use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}, create_formatter, OutputFormat};
+use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
@@ -70,7 +71,7 @@ impl Default for WireCrabApp {
             packet_receiver: None,
             capture_handle: None,
             is_running: Arc::new(AtomicBool::new(false)),
-            packet_cache_limit: CacheLimit::Limit(50),
+            packet_cache_limit: CacheLimit::Unlimited,
         }
     }
 }
@@ -115,8 +116,6 @@ impl App for WireCrabApp {
 
 impl WireCrabApp {
     fn show_capture_tab(&mut self, ctx: &egui::Context) {
-        let formatter = create_formatter(OutputFormat::Json);
- 
         // 顶部控制面板
         egui::TopBottomPanel::top("capture_controls").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -210,11 +209,11 @@ impl WireCrabApp {
                 egui::ComboBox::from_label("Cache")
                     .selected_text(self.packet_cache_limit.to_string())
                     .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Unlimited, "Unlimited");
                         ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Limit(50), "50");
                         ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Limit(100), "100");
                         ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Limit(500), "500");
                         ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Limit(1000), "1000");
-                        ui.selectable_value(&mut self.packet_cache_limit, CacheLimit::Unlimited, "Unlimited");
                     });
             });
             
@@ -368,7 +367,9 @@ impl WireCrabApp {
                             .id_salt("details_scroll")
                             .max_height(available_height * 0.5 - 5.0) // Allocate space, minus separator
                             .show(ui, |ui| {
-                                ui.label(formatter.format_packet(packet).unwrap_or("Failed to format packet".to_string()));
+                                let json_value = serde_json::to_value(packet).unwrap_or_default();
+                                JsonTree::new("packet_details", &json_value)
+                                    .show(ui);
                             });
                     });
 

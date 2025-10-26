@@ -327,4 +327,66 @@ mod tests {
         let filter = PacketFilter::new(Some("dns".to_string()), None, None, None, None, None);
         assert!(!filter.matches(&packet));
     }
+
+    fn create_test_arp_packet() -> ParsedPacket {
+        ParsedPacket {
+            timestamp: chrono::Utc::now(),
+            interface: "eth0".to_string(),
+            length: 42,
+            frame_number: 3,
+            link_layer: LinkLayer {
+                protocol: "Ethernet".to_string(),
+                src_mac: Some("00:11:22:33:44:55".to_string()),
+                dst_mac: Some("FF:FF:FF:FF:FF:FF".to_string()),
+            },
+            network_layer: Some(NetworkLayer::ARP {
+                operation: "Request".to_string(),
+                sender_mac: "00:11:22:33:44:55".to_string(),
+                sender_ip: "192.168.1.100".to_string(),
+                target_mac: "00:00:00:00:00:00".to_string(),
+                target_ip: "192.168.1.1".to_string(),
+            }),
+            transport_layer: None,
+            application_layer: None,
+            session_info: None,
+            transport_payload: None,
+            raw_data: vec![],
+        }
+    }
+
+    #[test]
+    fn test_arp_filter() {
+        use std::net::IpAddr;
+        use std::str::FromStr;
+
+        let packet = create_test_arp_packet();
+
+        // 1. No filter
+        let filter_none = PacketFilter::new(None, None, None, None, None, None);
+        assert!(filter_none.matches(&packet), "ARP packet should match an empty filter");
+
+        // 2. Protocol filter "arp"
+        let filter_proto = PacketFilter::new(Some("arp".to_string()), None, None, None, None, None);
+        assert!(filter_proto.matches(&packet), "ARP packet should match 'arp' protocol filter");
+
+        // 3. Protocol filter "tcp" (should not match)
+        let filter_proto_mismatch = PacketFilter::new(Some("tcp".to_string()), None, None, None, None, None);
+        assert!(!filter_proto_mismatch.matches(&packet), "ARP packet should not match 'tcp' protocol filter");
+
+        // 4. Source IP filter (match)
+        let filter_src_ip = PacketFilter::new(None, Some(IpAddr::from_str("192.168.1.100").unwrap()), None, None, None, None);
+        assert!(filter_src_ip.matches(&packet), "ARP packet should match correct source IP filter");
+
+        // 5. Destination IP filter (match)
+        let filter_dst_ip = PacketFilter::new(None, None, Some(IpAddr::from_str("192.168.1.1").unwrap()), None, None, None);
+        assert!(filter_dst_ip.matches(&packet), "ARP packet should match correct destination IP filter");
+
+        // 6. Source IP filter (mismatch)
+        let filter_src_ip_mismatch = PacketFilter::new(None, Some(IpAddr::from_str("10.0.0.1").unwrap()), None, None, None, None);
+        assert!(!filter_src_ip_mismatch.matches(&packet), "ARP packet should not match incorrect source IP filter");
+
+        // 7. Port filter (should not match)
+        let filter_port = PacketFilter::new(None, None, None, Some(80), None, None);
+        assert!(!filter_port.matches(&packet), "ARP packet should not match a port filter");
+    }
 }

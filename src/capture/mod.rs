@@ -5,7 +5,6 @@ use pcap::Capture;
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use crate::create_formatter;
 
 pub mod device;
 
@@ -37,11 +36,14 @@ impl PacketCapture {
 
     /// 初始化捕获器
     pub fn init(&mut self) -> Result<()> {
-        let cap = Capture::from_device(self.device_name.as_str())?
+        let mut cap = Capture::from_device(self.device_name.as_str())?
             .promisc(true)
             .snaplen(65535)
             .timeout(1000)
             .open()?;
+        
+        // 设置空的过滤器以捕获所有流量
+        cap.filter("", true)?;
 
         self.capture = Some(cap);
         Ok(())
