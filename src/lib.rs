@@ -5,6 +5,7 @@ pub mod filter;
 pub mod output;
 pub mod parser;
 pub mod session;
+pub mod gui;
 // 导出常用类型
 pub use capture::{device, CapturedPacket, PacketCapture};
 pub use filter::{FilterRules, PacketFilter};

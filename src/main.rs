@@ -120,7 +120,7 @@ fn main() -> Result<()> {
     };
 
     for packet in rx {
-        let timestamp = chrono::Utc::now().to_rfc3339();
+        let timestamp = chrono::Utc::now();
         match parser.parse_packet(&packet.data, timestamp, packet.interface) {
             Ok(mut parsed_packet) => {
                 // 应用基本过滤

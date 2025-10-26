@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use serde::Serialize;
+use chrono::{DateTime, Utc};
 
 pub mod ethernet;
 pub mod ipv4;
@@ -14,7 +15,7 @@ pub mod application;
 /// 解析后的数据包信息
 #[derive(Debug, Clone, Serialize)]
 pub struct ParsedPacket {
-    pub timestamp: String,
+    pub timestamp: DateTime<Utc>,
     pub interface: String,
     pub length: usize,
     pub frame_number: u64,
@@ -26,6 +27,8 @@ pub struct ParsedPacket {
 
     #[serde(skip)]
     pub transport_payload: Option<Vec<u8>>,
+    #[serde(skip)]
+    pub raw_data: Vec<u8>,
 }
 
 /// 链路层信息
@@ -94,6 +97,16 @@ pub enum TransportLayer {
     },
 }
 
+impl TransportLayer {
+    pub fn name(&self) -> &str {
+        match self {
+            TransportLayer::TCP { .. } => "TCP",
+            TransportLayer::UDP { .. } => "UDP",
+            TransportLayer::ICMP { .. } => "ICMP",
+        }
+    }
+}
+
 /// 会话信息
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
@@ -119,7 +132,7 @@ impl PacketParser {
     pub fn parse_packet(
         &mut self,
         data: &[u8],
-        timestamp: String,
+        timestamp: DateTime<Utc>,
         interface: String,
     ) -> Result<ParsedPacket> {
         self.frame_counter += 1;
@@ -281,6 +294,7 @@ impl PacketParser {
             application_layer,
             session_info: None, // 会话信息由会话追踪器提供
             transport_payload,
+            raw_data: data.to_vec(),
         })
     }
 }

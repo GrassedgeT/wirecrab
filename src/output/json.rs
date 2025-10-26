@@ -49,7 +49,7 @@ mod tests {
 
     fn create_test_packet() -> ParsedPacket {
         ParsedPacket {
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
+            timestamp: chrono::Utc::now(),
             interface: "eth0".to_string(),
             length: 100,
             frame_number: 1,
@@ -80,6 +80,7 @@ mod tests {
             application_layer: None,
             session_info: None,
             transport_payload: None,
+            raw_data: vec![],
         }
     }
 

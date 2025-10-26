@@ -5,6 +5,8 @@ use pcap::Capture;
 use std::sync::mpsc::Sender;
 use std::thread;
 
+use crate::create_formatter;
+
 pub mod device;
 
 /// 捕获的数据包
@@ -49,7 +51,7 @@ impl PacketCapture {
     pub fn start_capture(&mut self, sender: Sender<CapturedPacket>) -> Result<()> {
         let device_name = self.device_name.clone();
         let mut cap = self.capture.take().ok_or_else(|| anyhow::anyhow!("捕获器未初始化"))?;
-
+ 
         thread::spawn(move || {
             loop {
                 match cap.next_packet() {
@@ -80,11 +82,6 @@ impl PacketCapture {
         Ok(())
     }
 
-    /// 停止捕获
-    pub fn stop_capture(&mut self) {
-        // TODO: 实现停止逻辑
-        println!("停止数据包捕获");
-    }
 }
 
 #[cfg(test)]
