@@ -31,10 +31,6 @@ struct Cli {
     #[arg(long)]
     protocol: Option<String>,
     
-    /// 应用层协议过滤 (http|dns)
-    #[arg(long)]
-    app_protocol: Option<String>,
-
     /// 源IP地址过滤
     #[arg(long)]
     src_ip: Option<IpAddr>,
@@ -169,13 +165,6 @@ fn main() -> Result<()> {
                                     duration_ms: session.duration().as_millis() as u64,
                                 });
                             }
-                        }
-                    }
-                    
-                    // 应用层协议过滤（应用层已在解析器中解析）
-                    if let Some(ref app_proto) = cli.app_protocol {
-                        if !matches_app_protocol(&parsed_packet, app_proto) {
-                            continue;
                         }
                     }
                     

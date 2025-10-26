@@ -21,7 +21,7 @@ pub fn parse_http_data(data: &[u8]) -> Result<ApplicationLayer> {
     // 检查是请求还是响应
     if text.starts_with("HTTP/") {
         parse_http_response(text)
-    } else if is_http_method(&text[..text.find(' ').unwrap_or(0)]) {
+    } else if is_http_method(&text[..text.find(' ').unwrap_or(text.len())]) {
         parse_http_request(text)
     } else {
         bail!("无法识别的HTTP数据格式");
