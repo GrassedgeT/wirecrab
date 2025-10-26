@@ -79,7 +79,8 @@ impl Default for WireCrabApp {
 impl App for WireCrabApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
         if let Some(rx) = &self.packet_receiver {
-            while let Ok(packet) = rx.try_recv() {
+            let mut packet_count = 0;
+            for packet in rx.try_iter() {
                 self.packets.push_back(packet);
                 if let CacheLimit::Limit(limit) = self.packet_cache_limit {
                     if self.packets.len() > limit {
@@ -92,6 +93,11 @@ impl App for WireCrabApp {
                             }
                         }
                     }
+                }
+                packet_count += 1;
+                if packet_count >= 500 {
+                    ctx.request_repaint();
+                    break;
                 }
             }
         }
@@ -201,6 +207,7 @@ impl WireCrabApp {
                 }
                 if ui.button("Clear").clicked() {
                     self.packets.clear();
+                    self.filtered_packets.clear();
                     self.selected_packet_index = None;
                 }
 
@@ -298,59 +305,89 @@ impl WireCrabApp {
                         header.col(|ui| { ui.strong("Length"); });
                     })
                     .body(|mut body| {
-                        let packets_to_show: Vec<_> = if self.active_filter.is_some() {
-                            self.filtered_packets.iter().map(|&i| (i, &self.packets[i])).collect()
-                        } else {
-                            self.packets.iter().enumerate().collect()
-                        };
+                        let mut new_selection = self.selected_packet_index;
+                        let iter: Box<dyn Iterator<Item = (usize, &ParsedPacket)>> =
+                            if self.active_filter.is_some() {
+                                Box::new(
+                                    self.filtered_packets
+                                        .iter()
+                                        .map(|&i| (i, &self.packets[i])),
+                                )
+                            } else {
+                                Box::new(self.packets.iter().enumerate())
+                            };
 
-                        for (i, packet) in packets_to_show {
+                        for (i, packet) in iter {
                             let is_selected = self.selected_packet_index == Some(i);
                             body.row(18.0, |mut row| {
                                 row.set_selected(is_selected);
-                                row.col(|ui| { ui.label(packet.timestamp.format("%H:%M:%S").to_string()); });
                                 row.col(|ui| {
-                                    ui.label(packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                        crate::parser::NetworkLayer::IPv4 { src_ip, .. } => src_ip.as_str(),
-                                        crate::parser::NetworkLayer::IPv6 { src_ip, .. } => src_ip.as_str(),
-                                        crate::parser::NetworkLayer::ARP { sender_mac, .. } => sender_mac.as_str(),
-                                        _ => "N/A",
-                                    }));
+                                    ui.label(packet.timestamp.format("%H:%M:%S").to_string());
                                 });
                                 row.col(|ui| {
-                                    ui.label(packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                        crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => dst_ip.as_str(),
-                                        crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => dst_ip.as_str(),
-                                        crate::parser::NetworkLayer::ARP { target_mac, .. } => target_mac.as_str(),
-                                        _ => "N/A",
-                                    }));
+                                    ui.label(
+                                        packet.network_layer.as_ref().map_or("N/A", |l| match l {
+                                            crate::parser::NetworkLayer::IPv4 { src_ip, .. } => {
+                                                src_ip.as_str()
+                                            }
+                                            crate::parser::NetworkLayer::IPv6 { src_ip, .. } => {
+                                                src_ip.as_str()
+                                            }
+                                            crate::parser::NetworkLayer::ARP { sender_mac, .. } => {
+                                                sender_mac.as_str()
+                                            }
+                                            _ => "N/A",
+                                        }),
+                                    );
                                 });
                                 row.col(|ui| {
-                                    let protocol = if let Some(transport) = &packet.transport_layer {
-                                        transport.name().to_string()
-                                    } else if let Some(network) = &packet.network_layer {
-                                        match network {
-                                            crate::parser::NetworkLayer::ARP { .. } => "ARP".to_string(),
-                                            crate::parser::NetworkLayer::IPv4 { .. } => "IPv4".to_string(),
-                                            crate::parser::NetworkLayer::IPv6 { .. } => "IPv6".to_string(),
-                                            _ => "N/A".to_string(),
-                                        }
-                                    } else {
-                                        "N/A".to_string()
-                                    };
+                                    ui.label(
+                                        packet.network_layer.as_ref().map_or("N/A", |l| match l {
+                                            crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => {
+                                                dst_ip.as_str()
+                                            }
+                                            crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => {
+                                                dst_ip.as_str()
+                                            }
+                                            crate::parser::NetworkLayer::ARP { target_mac, .. } => {
+                                                target_mac.as_str()
+                                            }
+                                            _ => "N/A",
+                                        }),
+                                    );
+                                });
+                                row.col(|ui| {
+                                    let protocol =
+                                        if let Some(transport) = &packet.transport_layer {
+                                            transport.name().to_string()
+                                        } else if let Some(network) = &packet.network_layer {
+                                            match network {
+                                                crate::parser::NetworkLayer::ARP { .. } => {
+                                                    "ARP".to_string()
+                                                }
+                                                crate::parser::NetworkLayer::IPv4 { .. } => {
+                                                    "IPv4".to_string()
+                                                }
+                                                crate::parser::NetworkLayer::IPv6 { .. } => {
+                                                    "IPv6".to_string()
+                                                }
+                                                _ => "N/A".to_string(),
+                                            }
+                                        } else {
+                                            "N/A".to_string()
+                                        };
                                     ui.label(protocol);
                                 });
-                                row.col(|ui| { ui.label(packet.length.to_string()); });
-                                
+                                row.col(|ui| {
+                                    ui.label(packet.length.to_string());
+                                });
+
                                 if row.response().clicked() {
-                                    self.selected_packet_index = if is_selected {
-                                        None
-                                    } else {
-                                        Some(i)
-                                    };
+                                    new_selection = if is_selected { None } else { Some(i) };
                                 }
                             });
                         }
+                        self.selected_packet_index = new_selection;
                     });
             });
 
