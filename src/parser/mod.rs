@@ -196,6 +196,7 @@ impl PacketParser {
                     transport_payload = Some(udp_payload.to_vec());
                 }
             }
+            
         } else if eth_header.ether_type == etherparse::EtherType::IPV6 {
             // IPv6
             let (ipv6_header, ipv6_payload) = ipv6::parse_ipv6_packet(payload)?;
@@ -296,6 +297,36 @@ impl PacketParser {
             transport_payload,
             raw_data: data.to_vec(),
         })
+    }
+}
+
+impl ParsedPacket {
+    pub fn get_protocols(&self) -> Vec<&'static str> {
+        let mut protocols = Vec::new();
+        if let Some(net_layer) = &self.network_layer {
+            match net_layer {
+                crate::parser::NetworkLayer::IPv4 { .. } => protocols.push("ipv4"),
+                crate::parser::NetworkLayer::IPv6 { .. } => protocols.push("ipv6"),
+                crate::parser::NetworkLayer::ARP { .. } => protocols.push("arp"),
+                _ => {}
+            }
+        }
+        if let Some(transport_layer) = &self.transport_layer {
+            match transport_layer {
+                crate::parser::TransportLayer::TCP { .. } => protocols.push("tcp"),
+                crate::parser::TransportLayer::UDP { .. } => protocols.push("udp"),
+                _ => {}
+            }
+        }
+        if let Some(app_layer) = &self.application_layer {
+            match app_layer {
+                crate::parser::application::ApplicationLayer::HTTP { .. } => protocols.push("http"),
+                crate::parser::application::ApplicationLayer::TLS { .. } => protocols.push("https"), // Assuming TLS is HTTPS
+                crate::parser::application::ApplicationLayer::DNS { .. } => protocols.push("dns"),
+                _ => {}
+            }
+        }
+        protocols
     }
 }
 

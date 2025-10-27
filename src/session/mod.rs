@@ -8,10 +8,12 @@ use std::time::{Duration, SystemTime};
 
 pub mod tracker;
 pub mod flow;
-
+pub mod processor;
+ 
 pub use tracker::SessionTracker;
 pub use flow::{TcpFlow, FlowDirection};
-
+pub use processor::PacketProcessor;
+ 
 /// 会话密钥，用于唯一标识一个会话
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct SessionKey {

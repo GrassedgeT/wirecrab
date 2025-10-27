@@ -53,34 +53,31 @@ impl PacketCapture {
     pub fn start_capture(&mut self, sender: Sender<CapturedPacket>) -> Result<()> {
         let device_name = self.device_name.clone();
         let mut cap = self.capture.take().ok_or_else(|| anyhow::anyhow!("捕获器未初始化"))?;
- 
-        thread::spawn(move || {
-            loop {
-                match cap.next_packet() {
-                    Ok(packet) => {
-                        let captured_packet = CapturedPacket {
-                            timestamp: std::time::SystemTime::now(),
-                            data: packet.data.to_vec(),
-                            length: packet.header.len as usize,
-                            interface: device_name.clone(),
-                        };
-                        if sender.send(captured_packet).is_err() {
-                            // 接收端已关闭，停止捕获
-                            break;
-                        }
-                    }
-                    Err(pcap::Error::TimeoutExpired) => {
-                        // 在Windows上，超时是正常的，继续等待
-                        continue;
-                    }
-                    Err(e) => {
-                        eprintln!("捕获数据包时发生错误: {}", e);
+        
+        loop {
+            match cap.next_packet() {
+                Ok(packet) => {
+                    let captured_packet = CapturedPacket {
+                        timestamp: std::time::SystemTime::now(),
+                        data: packet.data.to_vec(),
+                        length: packet.header.len as usize,
+                        interface: device_name.clone(),
+                    };
+                    if sender.send(captured_packet).is_err() {
+                        // 接收端已关闭，停止捕获
                         break;
                     }
                 }
+                Err(pcap::Error::TimeoutExpired) => {
+                    // 在Windows上，超时是正常的，继续等待
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("捕获数据包时发生错误: {}", e);
+                    break;
+                }
             }
-        });
-
+        }
         Ok(())
     }
 

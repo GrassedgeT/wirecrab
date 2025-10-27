@@ -2,10 +2,10 @@ use eframe::{egui, App, Frame};
 use egui_json_tree::JsonTree;
 use egui_plot::{Line, Plot, Legend};
 use pcap::Device;
-use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}};
+use crate::{capture::{device, PacketCapture}, filter::PacketFilter, parser::{ParsedPacket, PacketParser}, session::PacketProcessor};
 use std::net::IpAddr;
 use std::str::FromStr;
-use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{mpsc, Arc, atomic::{AtomicBool, Ordering}, Mutex};
 use std::thread;
 use egui_extras::{TableBuilder, Column};
 use std::collections::{VecDeque, HashMap};
@@ -49,17 +49,17 @@ pub struct WireCrabApp {
     src_port_filter: String,
     dst_port_filter: String,
     port_filter: String,
-    packets: VecDeque<ParsedPacket>,
+    packets: Arc<Mutex<VecDeque<ParsedPacket>>>,
     filtered_packets: Vec<usize>,
     active_filter: Option<PacketFilter>,
     selected_packet_index: Option<usize>,
-    packet_receiver: Option<mpsc::Receiver<ParsedPacket>>,
     capture_handle: Option<thread::JoinHandle<()>>,
+    processor_handle: Option<thread::JoinHandle<()>>,
     is_running: Arc<AtomicBool>,
     packet_cache_limit: CacheLimit,
 
     // Statistics
-    protocol_counts: HashMap<String, u64>,
+    protocol_counts: Arc<Mutex<HashMap<String, u64>>>,
     time_series: HashMap<String, VecDeque<[f64; 2]>>,
     start_time: Instant,
     last_update: Instant,
@@ -79,15 +79,15 @@ impl Default for WireCrabApp {
             src_port_filter: String::new(),
             dst_port_filter: String::new(),
             port_filter: String::new(),
-            packets: VecDeque::new(),
+            packets: Arc::new(Mutex::new(VecDeque::new())),
             filtered_packets: Vec::new(),
             active_filter: None,
             selected_packet_index: None,
-            packet_receiver: None,
             capture_handle: None,
+            processor_handle: None,
             is_running: Arc::new(AtomicBool::new(false)),
             packet_cache_limit: CacheLimit::Unlimited,
-            protocol_counts: HashMap::new(),
+            protocol_counts: Arc::new(Mutex::new(HashMap::new())),
             time_series: HashMap::new(),
             start_time: Instant::now(),
             last_update: Instant::now(),
@@ -98,35 +98,10 @@ impl Default for WireCrabApp {
 
 impl App for WireCrabApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut Frame) {
-        if let Some(rx) = &self.packet_receiver {
-            let mut packet_count = 0;
-            for packet in rx.try_iter() {
-                let protocols = packet.get_protocols();
-                for protocol in protocols {
-                    *self.protocol_counts.entry(protocol.to_string()).or_insert(0) += 1;
-                }
-
-                self.packets.push_back(packet);
-                if let CacheLimit::Limit(limit) = self.packet_cache_limit {
-                    if self.packets.len() > limit {
-                        self.packets.pop_front();
-                        if let Some(selected) = self.selected_packet_index {
-                            if selected > 0 {
-                                self.selected_packet_index = Some(selected - 1);
-                            } else {
-                                self.selected_packet_index = None;
-                            }
-                        }
-                    }
-                }
-                packet_count += 1;
-                if packet_count >= 500 {
-                    ctx.request_repaint();
-                    break;
-                }
-            }
+        if self.is_capturing {
+            ctx.request_repaint();
         }
-
+        
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.active_tab, Tab::Capture, "Capture");
@@ -173,7 +148,9 @@ impl WireCrabApp {
                             }
                             response.clone().on_hover_text(hover_text);
                             if response.changed() {
-                                self.packets.clear();
+                                if let Ok(mut packets) = self.packets.lock() {
+                                    packets.clear();
+                                }
                                 self.selected_packet_index = None;
                             }
                         }
@@ -187,56 +164,49 @@ impl WireCrabApp {
                         if let Some(handle) = self.capture_handle.take() {
                             handle.join().unwrap();
                         }
+                        if let Some(handle) = self.processor_handle.take() {
+                            handle.join().unwrap();
+                        }
                     }
                 } else {
                     if ui.button("Start Capture").clicked() {
                         if let Some(index) = self.selected_device_index {
                             self.is_capturing = true;
                             self.is_running.store(true, Ordering::Relaxed);
-                            let (tx, rx) = mpsc::channel();
-                            self.packet_receiver = Some(rx);
+                            let (raw_tx, raw_rx) = mpsc::channel();
                             let device_name = self.devices[index].name.clone();
-                            let is_running = self.is_running.clone();
-
+                            let is_running_capture = self.is_running.clone();
+                            
                             self.capture_handle = Some(thread::spawn(move || {
                                 let mut capture = PacketCapture::new(device_name);
                                 if let Err(e) = capture.init() {
                                     eprintln!("Failed to initialize capture: {}", e);
                                     return;
                                 }
-                                let (raw_tx, raw_rx) = mpsc::channel();
-                                let capture_thread = thread::spawn(move || {
-                                    if let Err(e) = capture.start_capture(raw_tx) {
-                                        eprintln!("Failed to start capture: {}", e);
-                                    }
-                                });
-
-                                let mut parser = PacketParser::new();
-                                while is_running.load(Ordering::Relaxed) {
-                                    if let Ok(packet) = raw_rx.try_recv() {
-                                        let timestamp = chrono::Utc::now();
-                                        match parser.parse_packet(&packet.data, timestamp, packet.interface) {
-                                            Ok(parsed_packet) => {
-                                                if tx.send(parsed_packet).is_err() {
-                                                    break;
-                                                }
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to parse packet: {}", e);
-                                            }
-                                        }
-                                    }
+                                if let Err(e) = capture.start_capture(raw_tx) {
+                                    eprintln!("Failed to start capture: {}", e);
                                 }
-                                // capture_thread.join().unwrap();
+                            }));
+
+                            let is_running_processor = self.is_running.clone();
+                            let packets_clone = self.packets.clone();
+                            let protocol_counts_clone = self.protocol_counts.clone();
+                            self.processor_handle = Some(thread::spawn(move || {
+                                let processor = PacketProcessor::new(is_running_processor, raw_rx, packets_clone, protocol_counts_clone);
+                                processor.run();
                             }));
                         }
                     }
                 }
                 if ui.button("Clear").clicked() {
-                    self.packets.clear();
+                    if let Ok(mut packets) = self.packets.lock() {
+                        packets.clear();
+                    }
                     self.filtered_packets.clear();
                     self.selected_packet_index = None;
-                    self.protocol_counts.clear();
+                    if let Ok(mut counts) = self.protocol_counts.lock() {
+                        counts.clear();
+                    }
                     self.time_series.clear();
                 }
 
@@ -334,95 +304,79 @@ impl WireCrabApp {
                         header.col(|ui| { ui.strong("Length"); });
                     })
                     .body(|mut body| {
-                        let mut new_selection = self.selected_packet_index;
-                        let iter: Box<dyn Iterator<Item = (usize, &ParsedPacket)>> =
-                            if self.active_filter.is_some() {
-                                Box::new(
-                                    self.filtered_packets
-                                        .iter()
-                                        .map(|&i| (i, &self.packets[i])),
-                                )
+                        let packets = self.packets.lock().unwrap();
+                        let row_height = 18.0;
+                        let num_rows = if self.active_filter.is_some() {
+                            self.filtered_packets.len()
+                        } else {
+                            packets.len()
+                        };
+
+                        body.rows(row_height, num_rows, |mut row| {
+                            let row_index = row.index();
+                            let (packet_index, packet) = if let Some(filter) = &self.active_filter {
+                                let packet_idx = self.filtered_packets[row_index];
+                                (packet_idx, &packets[packet_idx])
                             } else {
-                                Box::new(self.packets.iter().enumerate())
+                                (row_index, &packets[row_index])
                             };
 
-                        for (i, packet) in iter {
-                            let is_selected = self.selected_packet_index == Some(i);
-                            body.row(18.0, |mut row| {
-                                row.set_selected(is_selected);
-                                row.col(|ui| {
-                                    ui.label(packet.timestamp.format("%H:%M:%S").to_string());
-                                });
-                                row.col(|ui| {
-                                    ui.label(
-                                        packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                            crate::parser::NetworkLayer::IPv4 { src_ip, .. } => {
-                                                src_ip.as_str()
-                                            }
-                                            crate::parser::NetworkLayer::IPv6 { src_ip, .. } => {
-                                                src_ip.as_str()
-                                            }
-                                            crate::parser::NetworkLayer::ARP { sender_mac, .. } => {
-                                                sender_mac.as_str()
-                                            }
-                                            _ => "N/A",
-                                        }),
-                                    );
-                                });
-                                row.col(|ui| {
-                                    ui.label(
-                                        packet.network_layer.as_ref().map_or("N/A", |l| match l {
-                                            crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => {
-                                                dst_ip.as_str()
-                                            }
-                                            crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => {
-                                                dst_ip.as_str()
-                                            }
-                                            crate::parser::NetworkLayer::ARP { target_mac, .. } => {
-                                                target_mac.as_str()
-                                            }
-                                            _ => "N/A",
-                                        }),
-                                    );
-                                });
-                                row.col(|ui| {
-                                    let protocol =
-                                        if let Some(transport) = &packet.transport_layer {
-                                            transport.name().to_string()
-                                        } else if let Some(network) = &packet.network_layer {
-                                            match network {
-                                                crate::parser::NetworkLayer::ARP { .. } => {
-                                                    "ARP".to_string()
-                                                }
-                                                crate::parser::NetworkLayer::IPv4 { .. } => {
-                                                    "IPv4".to_string()
-                                                }
-                                                crate::parser::NetworkLayer::IPv6 { .. } => {
-                                                    "IPv6".to_string()
-                                                }
-                                                _ => "N/A".to_string(),
-                                            }
-                                        } else {
-                                            "N/A".to_string()
-                                        };
-                                    ui.label(protocol);
-                                });
-                                row.col(|ui| {
-                                    ui.label(packet.length.to_string());
-                                });
-
-                                if row.response().clicked() {
-                                    new_selection = if is_selected { None } else { Some(i) };
-                                }
+                            let is_selected = self.selected_packet_index == Some(packet_index);
+                            row.set_selected(is_selected);
+                            
+                            row.col(|ui| {
+                                ui.label(packet.timestamp.format("%H:%M:%S").to_string());
                             });
-                        }
-                        self.selected_packet_index = new_selection;
+                            row.col(|ui| {
+                                ui.label(
+                                    packet.network_layer.as_ref().map_or("N/A", |l| match l {
+                                        crate::parser::NetworkLayer::IPv4 { src_ip, .. } => src_ip.as_str(),
+                                        crate::parser::NetworkLayer::IPv6 { src_ip, .. } => src_ip.as_str(),
+                                        crate::parser::NetworkLayer::ARP { sender_mac, .. } => sender_mac.as_str(),
+                                        _ => "N/A",
+                                    }),
+                                );
+                            });
+                            row.col(|ui| {
+                                ui.label(
+                                    packet.network_layer.as_ref().map_or("N/A", |l| match l {
+                                        crate::parser::NetworkLayer::IPv4 { dst_ip, .. } => dst_ip.as_str(),
+                                        crate::parser::NetworkLayer::IPv6 { dst_ip, .. } => dst_ip.as_str(),
+                                        crate::parser::NetworkLayer::ARP { target_mac, .. } => target_mac.as_str(),
+                                        _ => "N/A",
+                                    }),
+                                );
+                            });
+                            row.col(|ui| {
+                                let protocol = if let Some(transport) = &packet.transport_layer {
+                                    transport.name().to_string()
+                                } else if let Some(network) = &packet.network_layer {
+                                    match network {
+                                        crate::parser::NetworkLayer::ARP { .. } => "ARP".to_string(),
+                                        crate::parser::NetworkLayer::IPv4 { .. } => "IPv4".to_string(),
+                                        crate::parser::NetworkLayer::IPv6 { .. } => "IPv6".to_string(),
+                                        _ => "N/A".to_string(),
+                                    }
+                                } else {
+                                    "N/A".to_string()
+                                };
+                                ui.label(protocol);
+                            });
+                            row.col(|ui| {
+                                ui.label(packet.length.to_string());
+                            });
+
+                            if row.response().clicked() {
+                                self.selected_packet_index = if is_selected { None } else { Some(packet_index) };
+                            }
+                        });
                     });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(index) = self.selected_packet_index {
-                if let Some(packet) = self.packets.get(index) {
+                let packets = self.packets.lock().unwrap();
+                if let Some(packet) = packets.get(index) {
                     let available_height = ui.available_height();
                     let available_width = ui.available_width();
                     
@@ -467,11 +421,13 @@ impl WireCrabApp {
     fn show_statistics_tab(&mut self, ctx: &egui::Context) {
         if self.last_update.elapsed().as_secs_f32() > 1.0 {
             let now = self.start_time.elapsed().as_secs_f64();
-            for (protocol, count) in &self.protocol_counts {
-                let series = self.time_series.entry(protocol.clone()).or_default();
-                series.push_back([now, *count as f64]);
-                if series.len() > 100 { // Keep a limited history
-                    series.pop_front();
+            if let Ok(counts) = self.protocol_counts.lock() {
+                for (protocol, count) in counts.iter() {
+                    let series = self.time_series.entry(protocol.clone()).or_default();
+                    series.push_back([now, *count as f64]);
+                    if series.len() > 100 { // Keep a limited history
+                        series.pop_front();
+                    }
                 }
             }
             self.last_update = Instant::now();
@@ -499,42 +455,13 @@ impl WireCrabApp {
     fn apply_filter(&mut self) {
         self.filtered_packets.clear();
         if let Some(filter) = &self.active_filter {
-            for (i, packet) in self.packets.iter().enumerate() {
+            let packets = self.packets.lock().unwrap();
+            for (i, packet) in packets.iter().enumerate() {
                 if filter.matches(packet) {
                     self.filtered_packets.push(i);
                 }
             }
         }
         self.selected_packet_index = None;
-    }
-}
-
-impl ParsedPacket {
-    fn get_protocols(&self) -> Vec<&'static str> {
-        let mut protocols = Vec::new();
-        if let Some(net_layer) = &self.network_layer {
-            match net_layer {
-                crate::parser::NetworkLayer::IPv4 { .. } => protocols.push("ipv4"),
-                crate::parser::NetworkLayer::IPv6 { .. } => protocols.push("ipv6"),
-                crate::parser::NetworkLayer::ARP { .. } => protocols.push("arp"),
-                _ => {}
-            }
-        }
-        if let Some(transport_layer) = &self.transport_layer {
-            match transport_layer {
-                crate::parser::TransportLayer::TCP { .. } => protocols.push("tcp"),
-                crate::parser::TransportLayer::UDP { .. } => protocols.push("udp"),
-                _ => {}
-            }
-        }
-        if let Some(app_layer) = &self.application_layer {
-            match app_layer {
-                crate::parser::application::ApplicationLayer::HTTP { .. } => protocols.push("http"),
-                crate::parser::application::ApplicationLayer::TLS { .. } => protocols.push("https"), // Assuming TLS is HTTPS
-                crate::parser::application::ApplicationLayer::DNS { .. } => protocols.push("dns"),
-                _ => {}
-            }
-        }
-        protocols
     }
 }
