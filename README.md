@@ -1,12 +1,12 @@
 # WireCrab 嗅探器实验报告
-曹方泽 202528015059009
 ## 1. 基本介绍
-WireCrab 是一个使用 Rust 语言开发的网络数据包嗅探与分析工具。目前支持对以下协议的解析：
+UCAS软件与系统安全作业
+WireCrab 是一个使用 Rust 语言开发的网络数据包嗅探与分析工具(100% vibe coding)。目前支持对以下协议的解析：
 • 链路层: Ethernet
 • 网络层: IPv4/v6, ARP
 • 传输层: TCP, UDP
 • 应用层: HTTP, HTTPS, DNS, FTP, TLS
-工具分为两个主要部分：一个核心的cli工具，用于进行底层的网络抓包和数据处理（演示视频只对gui工具进行了演示）；以及一个基于 `egui` 的图形用户界面，为用户提供一个直观、交互式的网络分析环境。
+工具分为两个主要部分：一个核心的cli工具，用于进行底层的网络抓包和数据处理；以及一个基于 `egui` 的图形用户界面，为用户提供一个直观、交互式的网络分析环境。
 ### 主要技术栈
 
 *   **编程语言**: Rust
@@ -22,7 +22,7 @@ WireCrab 是一个使用 Rust 语言开发的网络数据包嗅探与分析工�
 
 ### 2.1 整体架构图
 
-![整体架构图](design_wirecrab.svg)
+![整体架构图](assets/design_wirecrab.svg)
 
 ### 2.2 模块设计
 
@@ -39,7 +39,7 @@ WireCrab 的核心逻辑被组织在一系列的模块中，实现了高度的�
 
 GUI 采用多线程模型以确保界面的流畅性和响应性。
 
-![GUI 线程模型图。](gui_thread_model.svg)
+![GUI 线程模型图](assets/gui_thread_model.svg)
 
 ## 3. 具体开发和实现过程
 ### 3.1 数据包捕获 (`capture` 模块)
@@ -49,11 +49,11 @@ GUI 采用多线程模型以确保界面的流畅性和响应性。
 *   [`src/capture/mod.rs`](src/capture/mod.rs:21): `PacketCapture` 结构体封装了 `pcap::Capture`。
 
 *   [`src/capture/mod.rs`](src/capture/mod.rs:53): `start_capture` 方法在一个循环中捕获数据包，并通过 `mpsc` 通道将原始数据发送给处理线程。
-![alt text]({C9226AB3-2776-4BFD-B71D-48B31284DC69}.png)
+![alt text](assets/{C9226AB3-2776-4BFD-B71D-48B31284DC69}.png)
 
 #### 流程图
 
-![数据包捕获流程图](packet_capture_flow.svg)
+![数据包捕获流程图](assets/packet_capture_flow.svg)
 
 ### 3.2 数据包解析 (`parser` 模块)
 
@@ -61,10 +61,10 @@ GUI 采用多线程模型以确保界面的流畅性和响应性。
 
 *   [`src/parser/mod.rs`](src/parser/mod.rs:122): `PacketParser` 结构体及其 `parse_packet` 方法是解析的核心入口。
 *   [`src/parser/application/mod.rs`](src/parser/application/mod.rs:117): `parse_application_data` 函数根据端口号分发到不同的应用层协议解析器。
-![alt text]({4081E703-0B1E-41E2-AF73-7CA08E0A174B}.png)
+![alt text](assets/{4081E703-0B1E-41E2-AF73-7CA08E0A174B}.png)
 #### 流程图
 
-![数据包分层解析流程图](packet_parsing_flow.svg)
+![数据包分层解析流程图](assets/packet_parsing_flow.svg)
 
 ### 3.3 TCP 会话追踪与流重组 (此部分还未完成)
 
@@ -80,9 +80,9 @@ GUI 采用多线程模型以确保界面的流畅性和响应性。
 #### 关键程序
 
 *   [`src/gui.rs`](src/gui.rs:41): `WireCrabApp` 结构体是 GUI 的主应用结构，管理所有状态和组件。
-![alt text]({A11BF21E-0ACD-400D-AABC-6CF5BC7DD7BB}.png)
+![alt text](assets/{A11BF21E-0ACD-400D-AABC-6CF5BC7DD7BB}.png)
 *   [`src/gui.rs`](src/gui.rs:160): 通过 `thread::spawn` 启动独立的抓包和处理线程，避免阻塞 UI。
-![alt text]({E30C6179-C1AD-4450-A694-27B4EB8FB56F}.png)
+![alt text](assets/{E30C6179-C1AD-4450-A694-27B4EB8FB56F}.png)
 *   [`src/gui.rs`](src/gui.rs:285): 使用 `egui_extras::TableBuilder` 构建高性能的数据包列表。
 *   [`src/gui.rs`](src/gui.rs:391): 使用 `egui_json_tree` 将解析结果以树状图展示。
 
@@ -241,7 +241,7 @@ cargo run --bin wirecrab -- -i "Ethernet"
 
 启动后，在 "Interface" 下拉菜单中选择一个用于抓包的网络接口。
 
-![alt text]({E4A1CC9F-8490-4E58-9001-55AF94FD7025}.png)
+![alt text](assets/{E4A1CC9F-8490-4E58-9001-55AF94FD7025}.png)
 
 #### 4.2.3 开始与停止抓包
 
@@ -251,24 +251,16 @@ cargo run --bin wirecrab -- -i "Ethernet"
 #### 4.2.4 应用过滤器
 
 在 "Filter Options" 区域输入过滤条件，例如在fliter option中选择"tcp"、目标ip和端口，然后点击 "Apply" 按钮。列表将只显示符合条件的数据包。
-![alt text]({13B30F7F-43D3-4CFA-9A7B-06BDB706ECC2}.png)
+![alt text](assets/{13B30F7F-43D3-4CFA-9A7B-06BDB706ECC2}.png)
 
 
 #### 4.2.5 查看数据包详情
 
 在列表中单击任意一个数据包，下方将展示该数据包的详细解析信息（树状结构）和原始数据（十六进制视图）。
 
-![alt text]({B1FCD1E5-40E7-4ADD-B032-9CEA88C44BA9}.png)
+![alt text](assets/{B1FCD1E5-40E7-4ADD-B032-9CEA88C44BA9}.png)
 
 #### 4.2.6 查看统计信息
 
 切换到 "Statistics" 标签页，可以查看协议流量的实时统计图表。
-![alt text]({1AEE7381-71A3-47A8-A20A-EEC8AA255725}.png)
-
-## 5. 总结
-
-通过本次实验，我成功设计并实现了一个功能较为完善的网络嗅探与分析工具 WireCrab。该项目不仅涵盖了网络编程、多线程处理、数据解析等核心技术，还通过 `egui` 构建了一个现代、响应迅速的图形用户界面。
-
-在开发过程中，我深入学习了 Rust 语言的优势，如其所有权系统带来的内存安全保证，以及强大的生态系统。通过对 `pcap`、`etherparse` 等库的应用，我加深了对网络协议栈的理解。`session` 模块的实现，特别是 TCP 流重组部分，是对网络协议复杂性的一个挑战，也极大地锻炼了我们的逻辑设计能力。
-
-WireCrab 目前已经具备了基本的抓包、解析、过滤和统计功能，但仍有许多可以改进和扩展的方向，总的来说，WireCrab 项目是一个成功的实践，它将理论知识与工程实践紧密结合，为我提供了一个宝贵的学习和开发经验。
+![alt text](assets/{1AEE7381-71A3-47A8-A20A-EEC8AA255725}.png)
